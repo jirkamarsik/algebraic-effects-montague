@@ -25,12 +25,12 @@ data a >-- b
 -- | The data type of effectful computations.
 data F l v where
   Pure :: v -> F '[] v
-  Impure :: (forall o . (p -> (a -> F l v) -> o) -> o) -> F (p >-- a ': l) v
+  Impure :: p -> (a -> F l v) -> F (p >-- a ': l) v
 
 -- | For any effect l, F l is a /Functor/.
 instance Functor (F l) where
   fmap f (Pure v) = Pure $ f v
-  fmap f (Impure m) = Impure $ \h -> m $ \p k -> h p (\a -> fmap f $ k a)
+  fmap f (Impure p k) = Impure p (\a -> fmap f $ k a)
 
 -- | Computations with algebraic effects form a graded monad.        
 instance Effect F where
@@ -42,7 +42,7 @@ instance Effect F where
 
   (>>=) :: F l1 v -> (v -> F l2 w) -> F (l1 :++ l2) w
   Pure v >>= k = k v
-  Impure m >>= k = Impure $ \h -> m $ \p k' -> h p (\a -> k' a >>= k)
+  Impure p k' >>= k = Impure p (\a -> k' a >>= k)
 
 -- | Graded monadic 'join'.
 join :: F l1 (F l2 v) -> F (l1 :++ l2) v
@@ -58,7 +58,7 @@ type Operation p a = forall l v . p -> (a -> F l v) -> F (p >-- a ': l) v
 -- | Operations take a parameter, p, and a-many arguments. Handlers then use the
 -- parameter to choose which arguments they will further handle.
 op :: Operation p a
-op p k = Impure $ \h -> h p k
+op = Impure
 
 -- | The type of a computation consisting of a single operation.
 type Computation p a = p -> F '[p >-- a] a
@@ -128,12 +128,12 @@ type InterpretScope = InterpretStOp Quantifier Entity Bool
 -- | Interpret a 'get' occurrence.
 interpretStGet :: InterpretGet v
 interpretStGet = \() k -> get () (\g -> case k g of
-                                          Impure m -> m $ \() k' -> k' g)
+                                          Impure () k' -> k' g)
 
 -- | Interpret a 'put' occurrence.
 interpretStPut :: InterpretPut v
 interpretStPut = \g k -> get () (\g' -> case k () of
-                                          Impure m -> m $ \() k' -> k' g)
+                                          Impure () k' -> k' g)
 
 -- | Interpret a 'scope' occurrence.
 interpretStScope :: InterpretScope
@@ -141,9 +141,9 @@ interpretStScope = \q k ->
                  get () (\g ->
                  put g (\() ->
                  return (q $ \x -> case k x of
-                                     Impure m -> m $ \_ k' ->
+                                     Impure _ k' ->
                                        case k' g of
-                                         Impure m' -> m' $ \_ k'' ->
+                                         Impure _ k'' ->
                                            case k'' () of
                                              Pure a -> a)))
 
@@ -241,9 +241,8 @@ instance (Retrievable (InterpretStOp p a v) handler,
           Handleable handler l '[() >-- [Entity], [Entity] >-- ()] v v)
       => Handleable handler (p >-- a ': l)
          '[() >-- [Entity], [Entity] >-- ()] v v where
-  handle handler (Impure m) =
-    m $ \p k -> retrieve @(InterpretStOp p a v) handler
-                p (\a -> handle handler (k a))
+  handle handler (Impure p k) =
+    retrieve @(InterpretStOp p a v) handler p (\a -> handle handler (k a))
 
 
 -- ===========
@@ -257,7 +256,7 @@ getVal (Pure v) = v
 
 -- | Evalutate a computation with one 'get' and one 'put' into the State monad.
 evalState :: F '[() >-- [Entity], [Entity] >-- ()] v -> CMS.State [Entity] v
-evalState (Impure m) = CMS.StateT $ \g -> m $ \_ k -> case k g of
-                                           Impure m' -> m' $ \g' k' ->
-                                             case k' () of
-                                               Pure v -> Identity (v, g')
+evalState (Impure _ k) = CMS.StateT $ \g -> case k g of
+                                             Impure g' k' ->
+                                               case k' () of
+                                                 Pure v -> Identity (v, g')
